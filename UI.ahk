@@ -1,0 +1,415 @@
+#Requires AutoHotkey v2.0
+
+class UI {
+    static GuiObj := ""
+    static RadioPresets := Map()
+    static DDLResolution := ""
+    static DDLProfile := ""
+    static BtnDeleteProfile := ""
+    static HKTrigger := ""
+    static EditClickDelay := ""
+    static EditTargetSwaps := ""
+    static DDLGearSlot := ""
+    static GridCheckboxes := Map()
+    static HKReload := ""
+    static HKExit := ""
+    static TextStatus := ""
+    static MonitorToId := Map()
+    static IdToMonitor := Map()
+
+    static __new() {
+        monitorCount := MonitorGetCount()
+        loop monitorCount {
+            MonitorGet(A_Index, &left, &top, &right, &bottom)
+            key := A_Index ": " MonitorGetName(A_Index) " (" (right - left) "x" (bottom - top) ")"
+            UI.MonitorToId[key] := A_Index
+            UI.IdToMonitor[A_Index] := key
+        }
+    }
+
+    static Show(startMode := "") {
+        if (this.GuiObj != "") {
+            if (startMode = "Minimize") {
+                this.GuiObj.Show("Minimize")
+            } else {
+                this.GuiObj.Show()
+            }
+            return
+        }
+
+        g := Gui("-MaximizeBox", D2SWAPPER_WINDOW_TITLE)
+        this.GuiObj := g
+        g.SetFont("s9", "Segoe UI")
+
+        ; -------------------------------------------------------------
+        ; Top Section: Presets & Resolution
+        ; -------------------------------------------------------------
+        g.Add("GroupBox", "x10 y10 w445 h60", "预设与分辨率")
+
+        this.RadioPresets["A"] := g.Add("Radio", "x25 y32 w75 h24", "预设 A")
+        this.RadioPresets["B"] := g.Add("Radio", "x105 y32 w75 h24", "预设 B")
+        this.RadioPresets["C"] := g.Add("Radio", "x185 y32 w75 h24", "预设 C")
+
+        this.RadioPresets["A"].OnEvent("Click", (*) => this.OnPresetChanged("A"))
+        this.RadioPresets["B"].OnEvent("Click", (*) => this.OnPresetChanged("B"))
+        this.RadioPresets["C"].OnEvent("Click", (*) => this.OnPresetChanged("C"))
+
+        g.Add("Text", "x270 y18 w160 h16", "显示器")
+        resList := []
+        for key in UI.MonitorToId
+            resList.Push(key)
+        this.DDLResolution := g.Add("DropDownList", "x270 y34 w170 choose" ConfigManager.SelectedMonitor, resList)
+        this.DDLResolution.OnEvent("Change", (*) => this.OnResolutionChanged())
+
+        ; -------------------------------------------------------------
+        ; Profiles Bar
+        ; -------------------------------------------------------------
+        g.Add("GroupBox", "x10 y78 w445 h58", "当前预设中的配置")
+        g.Add("Text", "x25 y103 w45 h20", "配置:")
+        this.DDLProfile := g.Add("DropDownList", "x75 y99 w195")
+        this.DDLProfile.OnEvent("Change", (*) => this.OnProfileSelected())
+
+        btnNew := g.Add("Button", "x280 y98 w75 h26", "新建+")
+        btnNew.OnEvent("Click", (*) => this.OnNewProfile())
+
+        this.BtnDeleteProfile := g.Add("Button", "x362 y98 w75 h26", "删除-")
+        this.BtnDeleteProfile.OnEvent("Click", (*) => this.OnDeleteProfile())
+
+        ; -------------------------------------------------------------
+        ; Profile Configuration Panel
+        ; -------------------------------------------------------------
+        g.Add("GroupBox", "x10 y144 w445 h360", "配置详情")
+
+        ; Trigger Hotkey
+        g.Add("Text", "x25 y173 w95 h20", "触发热键:")
+        this.HKTrigger := g.Add("Hotkey", "x125 y170 w180 h24")
+        this.HKTrigger.OnEvent("Change", (*) => this.OnHotkeyControlChanged())
+
+        btnClearBind := g.Add("Button", "x315 y169 w125 h26", "清除绑定")
+        btnClearBind.OnEvent("Click", (*) => this.OnClearBind())
+
+        ; Click Delay
+        g.Add("Text", "x25 y207 w95 h20", "点击延迟:")
+        this.EditClickDelay := g.Add("Edit", "x125 y204 w70 h22 +Number", ConfigManager.DefaultClickDelay)
+        g.Add("UpDown", "Range" ConfigManager.MinClickDelay "-" ConfigManager.MaxClickDelay, ConfigManager.DefaultClickDelay)
+        g.Add("Text", "x205 y207 w140 h20 cGray", Format("ms (Min {1}, Max {2})", ConfigManager.MinClickDelay, ConfigManager.MaxClickDelay))
+
+        ; Target Swaps
+        g.Add("Text", "x25 y241 w95 h20", "目标切换次数:")
+        this.EditTargetSwaps := g.Add("Edit", "x125 y238 w70 h22 +Number", ConfigManager.DefaultTargetSwaps)
+        g.Add("UpDown", "Range" ConfigManager.MinTargetSwaps "-" ConfigManager.MaxTargetSwaps, ConfigManager.DefaultTargetSwaps)
+        g.Add("Text", "x205 y241 w140 h20 cGray", Format("swaps (Min {1}, Max {2})", ConfigManager.MinTargetSwaps, ConfigManager.MaxTargetSwaps))
+
+        ; Monitored Gear Slot
+        g.Add("Text", "x25 y275 w95 h20", "装备槽位:")
+        this.DDLGearSlot := g.Add("DropDownList", "x125 y272 w130", ["头盔", "臂甲", "胸甲", "腿甲", "职业物品"])
+        ; Final Loadout
+        g.Add("Text", "x25 y309 w95 h20", "最终配装:")
+        finalList := ["无"]
+        loop 20
+        finalList.Push(String(A_Index))
+        this.DDLFinalLoadout := g.Add("DropDownList", "x125 y306 w80", finalList)
+
+        ; Numbered 4x5 Loadout Grid
+        g.SetFont("bold")
+        g.Add("Text", "x25 y340 w350 h18", "装备序列 (4x5 网格):")
+        g.SetFont("norm")
+        for r in [1, 2, 3, 4, 5] {
+            for c in [1, 2, 3, 4] {
+                idx := (r - 1) * 4 + c
+                xCol := 30 + (c - 1) * 102
+                yRow := 368 + (r - 1) * 26
+
+                ; Number label to the left of the checkbox
+                g.Add("Text", Format("x{} y{} w24 h20 Right", xCol, yRow + 2), idx ":")
+                ; Checkbox
+                this.GridCheckboxes[idx] := g.Add("Checkbox", Format("x+4 y{} w22 h20", yRow))
+            }
+        }
+
+        ; -------------------------------------------------------------
+        ; Footer: Global Exit/Reload Keys, Save, Status
+        ; -------------------------------------------------------------
+        g.Add("GroupBox", "x10 y512 w445 h96", "全局设置与操作")
+
+        ; Row 1: Reload Script Key and Reload Button
+        g.Add("Text", "x25 y537 w100 h20", "重载脚本热键:")
+        this.HKReload := g.Add("Hotkey", "x125 y534 w85 h24", ConfigManager.ReloadHotkey)
+        this.HKReload.OnEvent("Change", (*) => this.OnReloadHotkeyChanged())
+
+        btnReload := g.Add("Button", "x215 y533 w52 h26", "重载")
+        btnReload.OnEvent("Click", (*) => this.OnReloadScript())
+
+        ; Save Settings button (prominent on the right)
+        btnSave := g.Add("Button", "x275 y533 w165 h57 +Default", "保存设置")
+        btnSave.OnEvent("Click", (*) => this.OnSaveSettings())
+
+        ; Row 2: Exit Script Key
+        g.Add("Text", "x25 y570 w100 h20", "退出脚本热键:")
+        this.HKExit := g.Add("Hotkey", "x125 y567 w85 h24", ConfigManager.ExitHotkey)
+        this.HKExit.OnEvent("Change", (*) => this.OnExitHotkeyChanged())
+
+        this.TextStatus := g.Add("Text", "x12 y618 w440 h20 cGray", "Status: Ready")
+
+        g.OnEvent("Close", (*) => ExitApp())
+
+        ; Populate initial UI values
+        this.RefreshAll()
+
+        if (startMode = "Minimize") {
+            g.Show("Minimize")
+        } else {
+            g.Show("w465 h645")
+        }
+    }
+
+    static RefreshAll() {
+        ; Set radio buttons
+        for key, radio in this.RadioPresets {
+            radio.Value := (key == ConfigManager.ActivePreset)
+        }
+
+        ; Set Resolution dropdown
+        this.DDLResolution.Text := UI.IdToMonitor[ConfigManager.SelectedMonitor]
+
+        ; Refresh profile list and current profile
+        this.RefreshProfileDropdown()
+        this.LoadActiveProfileToUI()
+        this.HKExit.Value := ConfigManager.ExitHotkey
+        this.HKReload.Value := ConfigManager.ReloadHotkey
+        this.UpdateStatusBar()
+    }
+
+    static RefreshProfileDropdown() {
+        profiles := ConfigManager.Presets[ConfigManager.ActivePreset]
+        items := []
+        for p in profiles {
+            keyText := p.Keybind != "" ? p.Keybind : "Unbound"
+            items.Push("Profile " p.Name " [" keyText "]")
+        }
+
+        this.DDLProfile.Delete()
+        this.DDLProfile.Add(items)
+        if (ConfigManager.ActiveProfileIndex < 1 || ConfigManager.ActiveProfileIndex > profiles.Length)
+            ConfigManager.ActiveProfileIndex := 1
+        this.DDLProfile.Choose(ConfigManager.ActiveProfileIndex)
+
+        this.BtnDeleteProfile.Enabled := (profiles.Length > 1)
+    }
+
+    static LoadActiveProfileToUI() {
+        p := ConfigManager.GetActiveProfile()
+
+        ; Keybind display
+        this.HKTrigger.Value := ""
+        if (p.Keybind != "") {
+            try this.HKTrigger.Value := p.Keybind
+        }
+
+        ; Numeric inputs
+        this.EditClickDelay.Value := p.ClickDelay
+        this.EditTargetSwaps.Value := p.TargetSwaps
+
+        ; Gear dropdown
+        gearName := p.SelectedGear
+        if (gearName = "ClassItem")
+            gearName := "Class Item"
+        try this.DDLGearSlot.Text := gearName
+
+        ; Checkboxes
+        enabledMap := Map()
+        for slot in p.LoadoutGrid {
+            enabledMap[slot] := true
+        }
+
+        for idx, cb in this.GridCheckboxes {
+            cb.Value := enabledMap.Has(idx) ? 1 : 0
+        }
+        ; Final Loadout
+        finalIdx := p.FinalLoadout + 1
+        if (finalIdx < 1 || finalIdx > 21)
+        finalIdx := 1
+        this.DDLFinalLoadout.Value := finalIdx
+    }
+
+    static SaveUIToActiveProfile() {
+        p := ConfigManager.GetActiveProfile()
+
+        ; Clamped numeric inputs
+        p.ClickDelay := ConfigManager.ClampClickDelay(this.EditClickDelay.Value)
+        p.TargetSwaps := ConfigManager.ClampTargetSwaps(this.EditTargetSwaps.Value)
+        this.EditClickDelay.Value := p.ClickDelay
+        this.EditTargetSwaps.Value := p.TargetSwaps
+
+        ; Gear slot
+        gearVal := this.DDLGearSlot.Text
+        if (gearVal = "Class Item")
+            gearVal := "ClassItem"
+        p.SelectedGear := gearVal
+
+        ; 4x5 Grid
+        p.LoadoutGrid := []
+        for idx, cb in this.GridCheckboxes {
+            if (cb.Value == 1)
+                p.LoadoutGrid.Push(idx)
+        }
+        ; Final Loadout
+        p.FinalLoadout := this.DDLFinalLoadout.Value - 1
+        if (p.FinalLoadout < 0)
+        p.FinalLoadout := 0
+    }
+
+    static OnPresetChanged(newPreset) {
+        if (newPreset == ConfigManager.ActivePreset)
+            return
+
+        this.SaveUIToActiveProfile()
+        ConfigManager.ActivePreset := newPreset
+        ConfigManager.ActiveProfileIndex := 1
+
+        this.RefreshProfileDropdown()
+        this.LoadActiveProfileToUI()
+
+        ; Update hotkeys to only listen to the newly active preset
+        HotkeysManager.RegisterActivePreset()
+        this.UpdateStatusBar()
+    }
+
+    static OnProfileSelected() {
+        newIdx := this.DDLProfile.Value
+        if (newIdx == ConfigManager.ActiveProfileIndex || newIdx < 1)
+            return
+
+        this.SaveUIToActiveProfile()
+        ConfigManager.ActiveProfileIndex := newIdx
+        this.LoadActiveProfileToUI()
+    }
+
+    static OnNewProfile() {
+        this.SaveUIToActiveProfile()
+        newIdx := ConfigManager.AddProfile(ConfigManager.ActivePreset)
+        ConfigManager.ActiveProfileIndex := newIdx
+
+        this.RefreshProfileDropdown()
+        this.LoadActiveProfileToUI()
+        HotkeysManager.RegisterActivePreset()
+        this.UpdateStatusBar()
+    }
+
+    static OnDeleteProfile() {
+        profiles := ConfigManager.Presets[ConfigManager.ActivePreset]
+        if (profiles.Length <= 1) {
+            MsgBox("每个预设至少保留1个配置。", "Destiny 2 Swapper", "Icon!")
+            return
+        }
+
+        targetIdx := ConfigManager.ActiveProfileIndex
+        ConfigManager.DeleteProfile(ConfigManager.ActivePreset, targetIdx)
+
+        if (ConfigManager.ActiveProfileIndex > ConfigManager.Presets[ConfigManager.ActivePreset].Length)
+            ConfigManager.ActiveProfileIndex := ConfigManager.Presets[ConfigManager.ActivePreset].Length
+
+        this.RefreshProfileDropdown()
+        this.LoadActiveProfileToUI()
+        HotkeysManager.RegisterActivePreset()
+        this.UpdateStatusBar()
+    }
+
+    static OnHotkeyControlChanged() {
+        val := this.HKTrigger.Value
+        ; Guard against binding Escape
+        if (StrLower(val) = "escape" || StrLower(val) = "esc") {
+            this.HKTrigger.Value := ""
+            MsgBox("Esc 不能绑定，它用于取消正在进行的切换。", "Destiny 2 Swapper", "Icon!")
+            return
+        }
+
+        p := ConfigManager.GetActiveProfile()
+        p.Keybind := val
+        this.RefreshProfileDropdown()
+        HotkeysManager.RegisterActivePreset()
+        this.UpdateStatusBar()
+    }
+
+    static OnClearBind() {
+        p := ConfigManager.GetActiveProfile()
+        p.Keybind := ""
+        this.HKTrigger.Value := ""
+        this.RefreshProfileDropdown()
+        HotkeysManager.RegisterActivePreset()
+        this.UpdateStatusBar()
+    }
+
+    static OnResolutionChanged() {
+        asd := UI.MonitorToId[this.DDLResolution.Text]
+        ConfigManager.SelectedMonitor := asd
+    }
+
+    static OnExitHotkeyChanged() {
+        val := this.HKExit.Value
+        if (StrLower(val) = "escape" || StrLower(val) = "esc") {
+            this.HKExit.Value := ConfigManager.ExitHotkey
+            MsgBox("Esc 不能设为退出热键。", "Destiny 2 Swapper", "Icon!")
+            return
+        }
+        ConfigManager.ExitHotkey := val
+        HotkeysManager.RegisterExitHotkey()
+    }
+
+    static OnReloadHotkeyChanged() {
+        val := this.HKReload.Value
+        if (val = "")
+            val := "F5"
+        ConfigManager.ReloadHotkey := val
+        HotkeysManager.RegisterReloadHotkey()
+    }
+
+    static OnReloadScript() {
+        this.SaveUIToActiveProfile()
+        ConfigManager.SelectedResolution := UI.MonitorToId[this.DDLResolution.Text]
+
+        valExit := this.HKExit.Value
+        if (StrLower(valExit) != "escape" && StrLower(valExit) != "esc")
+            ConfigManager.ExitHotkey := valExit
+
+        valReload := this.HKReload.Value
+        if (valReload != "")
+            ConfigManager.ReloadHotkey := valReload
+
+        ConfigManager.Save()
+        Reload()
+    }
+
+    static OnSaveSettings() {
+        this.SaveUIToActiveProfile()
+        ConfigManager.SelectedResolution := UI.MonitorToId[this.DDLResolution.Text]
+
+        valExit := this.HKExit.Value
+        if (StrLower(valExit) != "escape" && StrLower(valExit) != "esc")
+            ConfigManager.ExitHotkey := valExit
+
+        valReload := this.HKReload.Value
+        if (valReload != "")
+            ConfigManager.ReloadHotkey := valReload
+
+        ConfigManager.Save()
+        HotkeysManager.RegisterActivePreset()
+        HotkeysManager.RegisterExitHotkey()
+        HotkeysManager.RegisterReloadHotkey()
+
+        this.RefreshProfileDropdown()
+        this.UpdateStatusBar("已保存，所有设置已写入 config.ini。")
+    }
+
+    static UpdateStatusBar(customMsg := "") {
+        if (customMsg != "") {
+            this.TextStatus.Text := customMsg
+            SetTimer(() => this.UpdateStatusBar(), -3000)
+            return
+        }
+
+        count := HotkeysManager.GetActiveListeningCount()
+        this.TextStatus.Text := Format("预设 {} 已激活（{} 个配置正在监听)", 
+            ConfigManager.ActivePreset, count, count == 1 ? "" : "s")
+    }
+}
